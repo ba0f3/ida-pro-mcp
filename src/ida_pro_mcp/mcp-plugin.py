@@ -4,10 +4,14 @@ import sys
 if sys.version_info < (3, 11):
     raise RuntimeError("Python 3.11 or higher is required for the MCP plugin")
 
+MCP_PROTOCOL_VERSION = "2025-06-18"
+
 import json
 import struct
 import threading
 import http.server
+import time
+import traceback
 from urllib.parse import urlparse
 from typing import (
     Any,
@@ -22,6 +26,26 @@ from typing import (
     overload,
     Literal,
 )
+
+class SSEManager:
+    def __init__(self):
+        self.connections = set()
+        self.lock = threading.Lock()
+
+    def add_connection(self, handler):
+        with self.lock:
+            self.connections.add(handler)
+
+    def remove_connection(self, handler):
+        with self.lock:
+            self.connections.remove(handler)
+
+    def broadcast(self, data: str, event: str = "message"):
+        with self.lock:
+            for handler in self.connections:
+                handler._send_event(data, event)
+
+sse_manager = SSEManager()
 
 class JSONRPCError(Exception):
     def __init__(self, code: int, message: str, data: Any = None):
@@ -98,6 +122,16 @@ def unsafe(func: Callable) -> Callable:
     return rpc_registry.mark_unsafe(func)
 
 class JSONRPCRequestHandler(http.server.BaseHTTPRequestHandler):
+    current_session_id = None
+
+    def do_OPTIONS(self):
+        self.send_response(204)
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, Mcp-Protocol-Version, Mcp-Session-Id")
+        self.send_header("Mcp-Protocol-Version", MCP_PROTOCOL_VERSION)
+        self.end_headers()
+
     def send_jsonrpc_error(self, code: int, message: str, id: Any = None):
         response = {
             "jsonrpc": "2.0",
@@ -112,11 +146,27 @@ class JSONRPCRequestHandler(http.server.BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(response_body)))
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Mcp-Protocol-Version", MCP_PROTOCOL_VERSION)
         self.end_headers()
         self.wfile.write(response_body)
 
     def do_POST(self):
         global rpc_registry
+
+        if self.headers.get("Mcp-Protocol-Version") != MCP_PROTOCOL_VERSION:
+            self.send_jsonrpc_error(-32099, "MCP protocol version mismatch", None)
+            return
+
+        session_id = self.headers.get("Mcp-Session-Id")
+        if session_id:
+            if session_id not in self.server.sessions:
+                self.send_jsonrpc_error(-32097, "Invalid MCP session ID", None)
+                return
+            self.current_session_id = session_id
+        else:
+            self.current_session_id = os.urandom(16).hex()
+            self.server.sessions[self.current_session_id] = {}
 
         parsed_path = urlparse(self.path)
         if parsed_path.path != "/mcp":
@@ -190,15 +240,72 @@ class JSONRPCRequestHandler(http.server.BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(response_body)))
+        self.send_header("Mcp-Protocol-Version", MCP_PROTOCOL_VERSION)
+        self.send_header("Mcp-Session-Id", self.current_session_id)
         self.end_headers()
         self.wfile.write(response_body)
+
+        global sse_manager
+        sse_manager.broadcast(request_body.decode("utf-8"), "jsonrpc-request")
+        sse_manager.broadcast(response_body.decode("utf-8"), "jsonrpc-response")
+
+    def do_GET(self):
+        global sse_manager
+
+        if self.headers.get("Mcp-Protocol-Version") != MCP_PROTOCOL_VERSION:
+            self.send_error(400, "MCP protocol version mismatch")
+            return
+
+        session_id = self.headers.get("Mcp-Session-Id")
+        if session_id:
+            if session_id not in self.server.sessions:
+                self.send_error(400, "Invalid MCP session ID")
+                return
+            self.current_session_id = session_id
+        else:
+            self.current_session_id = os.urandom(16).hex()
+            self.server.sessions[self.current_session_id] = {}
+
+        parsed_path = urlparse(self.path)
+        if parsed_path.path != "/mcp":
+            self.send_error(404)
+            return
+
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "keep-alive")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Mcp-Protocol-Version", MCP_PROTOCOL_VERSION)
+        self.send_header("Mcp-Session-Id", self.current_session_id)
+        self.end_headers()
+
+        sse_manager.add_connection(self)
+        try:
+            while True:
+                time.sleep(15)  # Keep the connection alive
+                self.wfile.write(b": keep-alive\n\n")
+                self.wfile.flush()
+        except (ConnectionAbortedError, ConnectionResetError):
+            print("[MCP] Client disconnected from GET /mcp")
+        except Exception as e:
+            traceback.print_exc()
+        finally:
+            sse_manager.remove_connection(self)
+
+    def _send_event(self, data: str, event: str = "message"):
+        self.wfile.write(f"event: {event}\n".encode("utf-8"))
+        for line in data.splitlines():
+            self.wfile.write(f"data: {line}\n".encode("utf-8"))
+        self.wfile.write(b"\n")
+        self.wfile.flush()
 
     def log_message(self, format, *args):
         # Suppress logging
         pass
 
-class MCPHTTPServer(http.server.HTTPServer):
-    allow_reuse_address = False
+class ThreadedHTTPServer(http.server.ThreadingHTTPServer):
+    allow_reuse_address = True
 
 class Server:
     HOST = "localhost"
@@ -208,6 +315,7 @@ class Server:
         self.server = None
         self.server_thread = None
         self.running = False
+        self.sessions = {}
 
     def start(self):
         if self.running:
@@ -234,7 +342,7 @@ class Server:
     def _run_server(self):
         try:
             # Create server in the thread to handle binding
-            self.server = MCPHTTPServer((Server.HOST, Server.PORT), JSONRPCRequestHandler)
+            self.server = ThreadedHTTPServer((Server.HOST, Server.PORT), JSONRPCRequestHandler)
             print(f"[MCP] Server started at http://{Server.HOST}:{Server.PORT}")
             self.server.serve_forever()
         except OSError as e:
