@@ -154,11 +154,6 @@ class JSONRPCRequestHandler(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         global rpc_registry
 
-        mcp_version = self.headers.get("Mcp-Protocol-Version")
-        if mcp_version and mcp_version != MCP_PROTOCOL_VERSION:
-            self.send_jsonrpc_error(-32099, "MCP protocol version mismatch", None)
-            return
-
         session_id = self.headers.get("Mcp-Session-Id")
         if session_id:
             if session_id not in self.server.sessions:
@@ -253,11 +248,6 @@ class JSONRPCRequestHandler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         global sse_manager
 
-        mcp_version = self.headers.get("Mcp-Protocol-Version")
-        if mcp_version and mcp_version != MCP_PROTOCOL_VERSION:
-            self.send_error(400, "MCP protocol version mismatch")
-            return
-
         session_id = self.headers.get("Mcp-Session-Id")
         if session_id:
             if session_id not in self.server.sessions:
@@ -345,6 +335,7 @@ class Server:
         try:
             # Create server in the thread to handle binding
             self.server = ThreadedHTTPServer((Server.HOST, Server.PORT), JSONRPCRequestHandler)
+            self.server.sessions = self.sessions
             print(f"[MCP] Server started at http://{Server.HOST}:{Server.PORT}")
             self.server.serve_forever()
         except OSError as e:
