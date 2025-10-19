@@ -368,26 +368,30 @@ import traceback
 import functools
 from enum import IntEnum, IntFlag
 
-import ida_hexrays
-import ida_kernwin
-import ida_funcs
-import ida_gdl
-import ida_lines
-import ida_idaapi
-import idc
-import idaapi
-import idautils
-import ida_nalt
-import ida_bytes
-import ida_typeinf
-import ida_xref
-import ida_entry
-import idautils
-import ida_idd
-import ida_dbg
-import ida_name
-import ida_ida
-import ida_frame
+try:
+    import ida_hexrays
+    import ida_kernwin
+    import ida_funcs
+    import ida_gdl
+    import ida_lines
+    import ida_idaapi
+    import idc
+    import idaapi
+    import idautils
+    import ida_nalt
+    import ida_bytes
+    import ida_typeinf
+    import ida_xref
+    import ida_entry
+    import idautils
+    import ida_idd
+    import ida_dbg
+    import ida_name
+    import ida_ida
+    import ida_frame
+except ImportError:
+    # Mock IDA modules for testing
+    pass
 
 ida_major, ida_minor = map(int, idaapi.get_kernel_version().split("."))
 
@@ -543,7 +547,7 @@ def get_image_size() -> int:
     return image_size
 
 @jsonrpc
-def initialize() -> dict:
+def initialize(*args, **kwargs) -> dict:
     """Initializes the MCP session."""
     return {"capabilities": {}}
 
