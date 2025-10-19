@@ -299,6 +299,11 @@ class JSONRPCRequestHandler(http.server.BaseHTTPRequestHandler):
 class ThreadedHTTPServer(http.server.ThreadingHTTPServer):
     allow_reuse_address = True
 
+class CustomThreadedHTTPServer(ThreadedHTTPServer):
+    def __init__(self, server_address, RequestHandlerClass, sessions):
+        super().__init__(server_address, RequestHandlerClass)
+        self.sessions = sessions
+
 class Server:
     HOST = "localhost"
     PORT = 13337
@@ -334,8 +339,7 @@ class Server:
     def _run_server(self):
         try:
             # Create server in the thread to handle binding
-            self.server = ThreadedHTTPServer((Server.HOST, Server.PORT), JSONRPCRequestHandler)
-            self.server.sessions = self.sessions
+            self.server = CustomThreadedHTTPServer((Server.HOST, Server.PORT), JSONRPCRequestHandler, self.sessions)
             print(f"[MCP] Server started at http://{Server.HOST}:{Server.PORT}")
             self.server.serve_forever()
         except OSError as e:
