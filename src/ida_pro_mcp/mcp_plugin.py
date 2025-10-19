@@ -265,6 +265,7 @@ class JSONRPCRequestHandler(http.server.BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(response_body)))
         self.send_header("Mcp-Protocol-Version", MCP_PROTOCOL_VERSION)
         self.send_header("Mcp-Session-Id", self.current_session_id)
+        self.send_header("Connection", "close")
         self.end_headers()
         self.wfile.write(response_body)
 
