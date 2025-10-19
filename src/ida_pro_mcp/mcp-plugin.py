@@ -42,8 +42,14 @@ class SSEManager:
 
     def broadcast(self, data: str, event: str = "message"):
         with self.lock:
+            disconnected_handlers = []
             for handler in self.connections:
-                handler._send_event(data, event)
+                try:
+                    handler._send_event(data, event)
+                except BrokenPipeError:
+                    disconnected_handlers.append(handler)
+            for handler in disconnected_handlers:
+                self.connections.remove(handler)
 
 sse_manager = SSEManager()
 
@@ -535,6 +541,11 @@ def get_image_size() -> int:
     if header and header[:4] == b"PE\0\0":
         image_size = struct.unpack("<I", header[0x50:0x54])[0]
     return image_size
+
+@jsonrpc
+def initialize() -> dict:
+    """Initializes the MCP session."""
+    return {"capabilities": {}}
 
 @jsonrpc
 @idaread
