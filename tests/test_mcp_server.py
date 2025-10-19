@@ -80,6 +80,25 @@ class TestMCPServer(unittest.TestCase):
         self.assertIn("capabilities", data["result"])
         conn.close()
 
+    def test_initialize_with_extra_params(self):
+        """Test that 'initialize' accepts extra parameters without error."""
+        conn = HTTPConnection(self.host, self.port)
+        headers = {"Content-Type": "application/json"}
+        payload = {
+            "jsonrpc": "2.0",
+            "method": "initialize",
+            "params": {"foo": "bar"},
+            "id": 2
+        }
+        conn.request("POST", "/mcp", body=json.dumps(payload), headers=headers)
+        response = conn.getresponse()
+        self.assertEqual(response.status, 200)
+        data = json.loads(response.read().decode())
+        self.assertEqual(data["id"], 2)
+        self.assertIn("result", data)
+        self.assertNotIn("error", data)
+        conn.close()
+
     def test_session_management(self):
         """Test that the server correctly manages sessions."""
         # First request, should get a new session ID

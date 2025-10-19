@@ -12,6 +12,7 @@ import threading
 import http.server
 import time
 import traceback
+import inspect
 from urllib.parse import urlparse
 from typing import (
     Any,
@@ -77,42 +78,62 @@ class RPCRegistry:
             raise JSONRPCError(-32601, f"Method '{method}' not found")
 
         func = self.methods[method]
+        sig = inspect.signature(func)
         hints = get_type_hints(func)
+
+        # Check for *args and **kwargs
+        has_var_positional = any(p.kind == inspect.Parameter.VAR_POSITIONAL for p in sig.parameters.values())
+        has_var_keyword = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())
 
         # Remove return annotation if present
         hints.pop("return", None)
 
         if isinstance(params, list):
-            if len(params) != len(hints):
+            if not has_var_positional and len(params) != len(hints):
                 raise JSONRPCError(-32602, f"Invalid params: expected {len(hints)} arguments, got {len(params)}")
 
             # Validate and convert parameters
             converted_params = []
-            for value, (param_name, expected_type) in zip(params, hints.items()):
-                try:
-                    if not isinstance(value, expected_type):
-                        value = expected_type(value)
+            param_definitions = list(hints.items())
+            for i, value in enumerate(params):
+                if i < len(param_definitions):
+                    param_name, expected_type = param_definitions[i]
+                    try:
+                        if not isinstance(value, expected_type):
+                            value = expected_type(value)
+                        converted_params.append(value)
+                    except (ValueError, TypeError):
+                        raise JSONRPCError(-32602, f"Invalid type for parameter '{param_name}': expected {expected_type.__name__}")
+                else:
+                    # Append extra arguments if the function accepts them
                     converted_params.append(value)
-                except (ValueError, TypeError):
-                    raise JSONRPCError(-32602, f"Invalid type for parameter '{param_name}': expected {expected_type.__name__}")
 
             return func(*converted_params)
+
         elif isinstance(params, dict):
-            if set(params.keys()) != set(hints.keys()):
-                raise JSONRPCError(-32602, f"Invalid params: expected {list(hints.keys())}")
+            if not has_var_keyword and set(params.keys()) != set(hints.keys()):
+                 raise JSONRPCError(-32602, f"Invalid params: expected {list(hints.keys())}")
 
             # Validate and convert parameters
             converted_params = {}
-            for param_name, expected_type in hints.items():
-                value = params.get(param_name)
-                try:
-                    if not isinstance(value, expected_type):
-                        value = expected_type(value)
+            for param_name, value in params.items():
+                if param_name in hints:
+                    expected_type = hints[param_name]
+                    try:
+                        if not isinstance(value, expected_type):
+                            value = expected_type(value)
+                        converted_params[param_name] = value
+                    except (ValueError, TypeError):
+                        raise JSONRPCError(-32602, f"Invalid type for parameter '{param_name}': expected {expected_type.__name__}")
+                else:
+                    # Append extra keyword arguments if the function accepts them
                     converted_params[param_name] = value
-                except (ValueError, TypeError):
-                    raise JSONRPCError(-32602, f"Invalid type for parameter '{param_name}': expected {expected_type.__name__}")
 
             return func(**converted_params)
+
+        elif not params: # Handles calls with no params
+            return func()
+
         else:
             raise JSONRPCError(-32600, "Invalid Request: params must be array or object")
 
